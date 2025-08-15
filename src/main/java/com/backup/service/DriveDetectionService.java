@@ -16,6 +16,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import static com.backup.util.DriveUtils.isRemovableDrive;
+
 public class DriveDetectionService {
 
     private static final Logger logger = LoggerFactory.getLogger(DriveDetectionService.class);
@@ -69,68 +71,6 @@ public class DriveDetectionService {
         } catch (Exception e) {
             logger.error("Error during drive scan", e);
         }
-    }
-
-    private boolean isRemovableDrive(Path root, FileStore fileStore) {
-        try {
-            // Check if it's writable and has reasonable space (> 1GB for safety)
-            long totalSpace = fileStore.getTotalSpace();
-            long usableSpace = fileStore.getUsableSpace();
-
-            if (totalSpace <= 0 || usableSpace <= 0) {
-                return false;
-            }
-
-            // On Windows, check drive type
-            String osName = System.getProperty("os.name").toLowerCase();
-            if (osName.contains("win")) {
-                return isWindowsRemovableDrive(root);
-            } else {
-                // On Unix-like systems, check mount points
-                return isUnixRemovableDrive(root, fileStore);
-            }
-
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private boolean isWindowsRemovableDrive(Path root) {
-        try {
-            // Use Windows-specific logic to detect removable drives
-            String rootString = root.toString();
-            if (rootString.length() >= 2 && rootString.charAt(1) == ':') {
-                // This is a simplified check - in a production app you might use JNA
-                // to call Windows APIs for more accurate detection
-
-                // For now, we'll assume drives C: and D: are usually system drives
-                char driveLetter = rootString.charAt(0);
-                return driveLetter != 'C' && driveLetter != 'D';
-            }
-        } catch (Exception e) {
-            logger.debug("Error checking Windows drive type", e);
-        }
-        return false;
-    }
-
-    private boolean isUnixRemovableDrive(Path root, FileStore fileStore) {
-        try {
-            // Check if mount point suggests it's removable
-            String mountPoint = root.toString();
-            String fileStoreType = fileStore.type();
-
-            // Common mount points for removable media
-            return mountPoint.startsWith("/media/") ||
-                    mountPoint.startsWith("/mnt/") ||
-                    mountPoint.startsWith("/Volumes/") || // macOS
-                    fileStoreType.equals("vfat") ||
-                    fileStoreType.equals("exfat") ||
-                    fileStoreType.equals("ntfs");
-
-        } catch (Exception e) {
-            logger.debug("Error checking Unix drive type", e);
-        }
-        return false;
     }
 
     private void updateDriveList(Set<Path> currentDrives) {

@@ -1,4 +1,3 @@
-
 package com.backup.constants;
 
 public final class AppConstants {

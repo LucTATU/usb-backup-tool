@@ -1,4 +1,3 @@
-
 package com.backup.exception;
 
 public class BackupException extends Exception {

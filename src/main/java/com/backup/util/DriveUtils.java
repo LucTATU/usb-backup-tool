@@ -1,4 +1,3 @@
-
 package com.backup.util;
 
 import org.slf4j.Logger;
@@ -39,7 +38,7 @@ public final class DriveUtils {
         }
     }
     
-    private static boolean isWindowsRemovableDrive(Path root) {
+    public static boolean isWindowsRemovableDrive(Path root) {
         try {
             String rootString = root.toString();
             if (rootString.length() >= 2 && rootString.charAt(1) == ':') {
@@ -52,7 +51,7 @@ public final class DriveUtils {
         return false;
     }
     
-    private static boolean isUnixRemovableDrive(Path root, FileStore fileStore) {
+    public static boolean isUnixRemovableDrive(Path root, FileStore fileStore) {
         try {
             String mountPoint = root.toString();
             String fileStoreType = fileStore.type();

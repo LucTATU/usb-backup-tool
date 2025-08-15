@@ -1,4 +1,3 @@
-
 package com.backup.exception;
 
 public class NetworkConnectionException extends BackupException {

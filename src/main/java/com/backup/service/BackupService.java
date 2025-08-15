@@ -76,9 +76,9 @@ public class BackupService {
 
                     // Check available space
                     long availableSpace = Files.getFileStore(destinationPath).getUsableSpace();
-                    if (availableSpace < analysis.totalSizeToBackup) {
+                    if (availableSpace < analysis.getTotalSizeToBackup()) {
                         throw new IOException("Insufficient disk space. Need " +
-                                formatBytes(analysis.totalSizeToBackup) + ", available " +
+                                formatBytes(analysis.getTotalSizeToBackup()) + ", available " +
                                 formatBytes(availableSpace));
                     }
 
@@ -90,7 +90,7 @@ public class BackupService {
                     // Record successful backup
                     History history = new History(
                             LocalDateTime.now(), sourceUrl, destinationPath.toString(),
-                            analysis.filesToBackup, analysis.totalSizeToBackup, true);
+                            analysis.getFilesToBackup(), analysis.getTotalSizeToBackup(), true);
 
                     config.getHistories().add(history);
 
@@ -126,7 +126,7 @@ public class BackupService {
         analyzeDirectory(sourceUrl, destinationPath, analysis);
 
         logger.info("Backup analysis: {} files to backup, {} bytes total",
-                analysis.filesToBackup, analysis.totalSizeToBackup);
+                analysis.getFilesToBackup(), analysis.getTotalSizeToBackup());
 
         return analysis;
     }
@@ -135,22 +135,22 @@ public class BackupService {
         List<FileInfo> files = networkService.listFiles(sourcePath);
 
         for (FileInfo file : files) {
-            if (file.isDirectory) {
+            if (file.isDirectory()) {
                 // Create directory if it doesn't exist
-                Path destDir = destinationPath.resolve(file.name);
+                Path destDir = destinationPath.resolve(file.getName());
                 if (!Files.exists(destDir)) {
-                    analysis.filesToBackup++;
+                    analysis.setFilesToBackup(analysis.getFilesToBackup() + 1);
                 }
 
                 // Recursively analyze subdirectory
-                analyzeDirectory(file.path, destDir, analysis);
+                analyzeDirectory(file.getPath(), destDir, analysis);
             } else {
                 // Check if file needs to be copied
-                Path destFile = destinationPath.resolve(file.name);
+                Path destFile = destinationPath.resolve(file.getName());
 
                 if (shouldCopyFile(file, destFile)) {
-                    analysis.filesToBackup++;
-                    analysis.totalSizeToBackup += file.size;
+                    analysis.setFilesToBackup(analysis.getFilesToBackup() + 1);
+                    analysis.setTotalSizeToBackup(analysis.getFilesToBackup() + file.getSize());
                 }
             }
         }
@@ -166,7 +166,7 @@ public class BackupService {
             long destSize = Files.size(destinationFile);
             long destModified = Files.getLastModifiedTime(destinationFile).toMillis();
 
-            return sourceFile.size != destSize || sourceFile.lastModified > destModified;
+            return sourceFile.getSize() != destSize || sourceFile.getLastModified() > destModified;
 
         } catch (IOException e) {
             logger.warn("Could not check destination file: {}", destinationFile, e);
@@ -179,8 +179,8 @@ public class BackupService {
                                Consumer<String> statusCallback) throws IOException {
 
         Progress progress = new Progress();
-        progress.totalFiles = analysis.filesToBackup;
-        progress.totalBytes = analysis.totalSizeToBackup;
+        progress.totalFiles = analysis.getFilesToBackup();
+        progress.totalBytes = analysis.getTotalSizeToBackup();
 
         copyDirectory(sourcePath, destinationPath, progress, progressCallback, statusCallback);
     }
@@ -197,19 +197,19 @@ public class BackupService {
         List<FileInfo> files = networkService.listFiles(sourcePath);
 
         for (FileInfo file : files) {
-            if (file.isDirectory) {
-                Path destDir = destinationPath.resolve(file.name);
-                copyDirectory(file.path, destDir, progress, progressCallback, statusCallback);
+            if (file.isDirectory()) {
+                Path destDir = destinationPath.resolve(file.getName());
+                copyDirectory(file.getPath(), destDir, progress, progressCallback, statusCallback);
             } else {
-                Path destFile = destinationPath.resolve(file.name);
+                Path destFile = destinationPath.resolve(file.getName());
 
                 if (shouldCopyFile(file, destFile)) {
-                    Platform.runLater(() -> statusCallback.accept("Copying: " + file.name));
+                    Platform.runLater(() -> statusCallback.accept("Copying: " + file.getName()));
 
-                    copyFile(file.path, destFile);
+                    copyFile(file.getPath(), destFile);
 
                     progress.filesProcessed++;
-                    progress.bytesProcessed += file.size;
+                    progress.bytesProcessed += file.getSize();
 
                     Platform.runLater(() -> progressCallback.accept(progress));
                 }

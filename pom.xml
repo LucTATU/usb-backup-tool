@@ -15,10 +15,12 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>17</java.version>
+        <java.version>21</java.version>
         <junit.version>5.10.2</junit.version>
-        <javafx.version>17.0.8</javafx.version>
+        <javafx.version>23</javafx.version>
         <jackson.version>2.18.2</jackson.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
     </properties>
 
     <dependencies>
