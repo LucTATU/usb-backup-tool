@@ -1,0 +1,8 @@
+modules = ["java-graalvm22.3", "bash"]
+run = "mvn clean javafx:run"
+
+[nix]
+channel = "stable-25_05"
+
+[deployment]
+run = ["sh", "-c", "mvn clean javafx:run"]
