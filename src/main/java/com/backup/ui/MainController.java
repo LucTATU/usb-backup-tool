@@ -204,9 +204,9 @@ public class MainController {
                 (ListChangeListener<SmbShare>) change -> {
                     Platform.runLater(() -> {
                         if (change.getList().isEmpty()) {
-                            smbStatusLabel.setText("No SMB shares detected");
+                            smbStatusLabel.setText("No network drives detected");
                         } else {
-                            smbStatusLabel.setText(change.getList().size() + " SMB shares found");
+                            smbStatusLabel.setText(change.getList().size() + " network drives found");
                         }
                     });
                 });
@@ -219,7 +219,7 @@ public class MainController {
                 (ListChangeListener<Path>) change -> {
                     Platform.runLater(() -> {
                         if (change.getList().isEmpty()) {
-                            usbInfoLabel.setText("No USB drives detected");
+                            usbInfoLabel.setText("No local drives detected");
                             startBackupButton.setDisable(true);
                         } else {
                             if (usbDriveComboBox.getSelectionModel().isEmpty()) {
@@ -255,12 +255,12 @@ public class MainController {
     private void scanSmbShares() {
         scanSmbButton.setDisable(true);
         scanSmbButton.setText("Scanning...");
-        smbStatusLabel.setText("Scanning network for SMB shares...");
+        smbStatusLabel.setText("Scanning for network drives...");
 
         smbDriveService.scanNetworkForShares().thenRun(() -> {
             Platform.runLater(() -> {
                 scanSmbButton.setDisable(false);
-                scanSmbButton.setText("Scan Network");
+                scanSmbButton.setText("Refresh Network");
                 smbStatusLabel.setText("Scan completed");
             });
         });
@@ -270,36 +270,24 @@ public class MainController {
     private void connectToSmb() {
         SmbShare selectedShare = smbShareComboBox.getSelectionModel().getSelectedItem();
         if (selectedShare == null) {
-            showAlert("Please select an SMB share first.");
+            showAlert("Please select a network drive first.");
             return;
         }
 
-        String username = smbUsernameField.getText().trim();
-        String password = smbPasswordField.getText();
-
-        if (username.isEmpty()) {
-            username = "guest";
-        }
-
         connectSmbButton.setDisable(true);
-        smbStatusLabel.setText("Connecting...");
+        smbStatusLabel.setText("Accessing drive...");
 
-        Thread connectThread = new Thread(() -> {
-            boolean success = smbDriveService.connectToShare(selectedShare, username, password);
+        Platform.runLater(() -> {
+            boolean success = smbDriveService.connectToShare(selectedShare, "", "");
 
-            Platform.runLater(() -> {
-                connectSmbButton.setDisable(false);
-                if (success) {
-                    smbStatusLabel.setText("Connected successfully");
-                    loadSmbDirectoryTree(selectedShare);
-                } else {
-                    smbStatusLabel.setText("Connection failed");
-                }
-            });
+            connectSmbButton.setDisable(false);
+            if (success) {
+                smbStatusLabel.setText("Drive accessed successfully");
+                loadSmbDirectoryTree(selectedShare);
+            } else {
+                smbStatusLabel.setText("Failed to access drive");
+            }
         });
-
-        connectThread.setDaemon(true);
-        connectThread.start();
     }
 
     private void loadSmbDirectoryTree(SmbShare share) {
@@ -411,17 +399,17 @@ public class MainController {
     @FXML
     private void startBackup() {
         if (selectedSmbPath.isEmpty()) {
-            showAlert("Please select a source folder from SMB share.");
+            showAlert("Please select a source folder from network drive.");
             return;
         }
 
         if (selectedUsbPath == null) {
-            showAlert("Please select a destination folder on USB drive.");
+            showAlert("Please select a destination folder on local drive.");
             return;
         }
 
         if (!Files.exists(selectedUsbPath)) {
-            showAlert("Selected USB path is no longer available.");
+            showAlert("Selected local drive path is no longer available.");
             return;
         }
 
@@ -473,7 +461,7 @@ public class MainController {
 
     private void updateUsbInfo(Path drive) {
         if (drive == null) {
-            usbInfoLabel.setText("No USB drive selected");
+            usbInfoLabel.setText("No local drive selected");
             return;
         }
 

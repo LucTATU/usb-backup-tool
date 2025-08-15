@@ -3,172 +3,245 @@ package com.backup.service;
 
 import com.backup.model.FileInfo;
 import com.backup.model.SmbShare;
-import com.backup.exception.NetworkConnectionException;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
+import java.nio.file.FileStore;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class SmbDriveService {
 
     private static final Logger logger = LoggerFactory.getLogger(SmbDriveService.class);
 
-    private final NetworkFileService networkService;
     private final ExecutorService executor;
+    private final ScheduledExecutorService scheduledExecutor;
     private final ObservableList<SmbShare> availableShares = FXCollections.observableArrayList();
+    private final Set<Path> knownNetworkDrives = new HashSet<>();
 
     public SmbDriveService() {
-        this.networkService = new NetworkFileService();
         this.executor = Executors.newCachedThreadPool();
+        this.scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
+        startNetworkDriveMonitoring();
     }
 
     public ObservableList<SmbShare> getAvailableShares() {
         return FXCollections.unmodifiableObservableList(availableShares);
     }
 
+    private void startNetworkDriveMonitoring() {
+        scanForNetworkDrives();
+        scheduledExecutor.scheduleAtFixedRate(this::scanForNetworkDrives, 3, 3, TimeUnit.SECONDS);
+        logger.info("Network drive monitoring started");
+    }
+
+    private void scanForNetworkDrives() {
+        try {
+            Set<Path> currentNetworkDrives = new HashSet<>();
+
+            for (Path root : FileSystems.getDefault().getRootDirectories()) {
+                try {
+                    FileStore fileStore = Files.getFileStore(root);
+                    
+                    if (isNetworkDrive(root, fileStore)) {
+                        currentNetworkDrives.add(root);
+                    }
+                } catch (IOException e) {
+                    continue;
+                }
+            }
+
+            javafx.application.Platform.runLater(() -> updateNetworkDriveList(currentNetworkDrives));
+
+        } catch (Exception e) {
+            logger.error("Error during network drive scan", e);
+        }
+    }
+
+    private boolean isNetworkDrive(Path root, FileStore fileStore) {
+        try {
+            String osName = System.getProperty("os.name").toLowerCase();
+            
+            if (osName.contains("win")) {
+                return isWindowsNetworkDrive(root, fileStore);
+            } else {
+                return isUnixNetworkDrive(root, fileStore);
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isWindowsNetworkDrive(Path root, FileStore fileStore) {
+        try {
+            String rootString = root.toString();
+            if (rootString.length() >= 2 && rootString.charAt(1) == ':') {
+                char driveLetter = rootString.charAt(0);
+                
+                // Network drives are typically mapped to letters like Y:, Z:, etc.
+                // They usually have specific file system types
+                String type = fileStore.type().toLowerCase();
+                String name = fileStore.name().toLowerCase();
+                
+                // Check if it's a network file system
+                boolean isNetworkType = type.contains("cifs") || type.contains("smb") || 
+                                      type.contains("nfs") || name.contains("\\\\");
+                
+                // Network drives are typically in higher letters (Y, Z)
+                boolean isNetworkLetter = driveLetter >= 'Y' || driveLetter >= 'y';
+                
+                return isNetworkType || isNetworkLetter;
+            }
+        } catch (Exception e) {
+            logger.debug("Error checking Windows network drive", e);
+        }
+        return false;
+    }
+
+    private boolean isUnixNetworkDrive(Path root, FileStore fileStore) {
+        try {
+            String mountPoint = root.toString();
+            String fileStoreType = fileStore.type().toLowerCase();
+
+            // Check for network file systems
+            boolean isNetworkFileSystem = fileStoreType.equals("cifs") ||
+                    fileStoreType.equals("smb") ||
+                    fileStoreType.equals("nfs") ||
+                    fileStoreType.equals("smbfs");
+
+            // Check mount point patterns typical for network drives
+            boolean isNetworkMountPoint = mountPoint.startsWith("/net/") ||
+                    mountPoint.startsWith("/mnt/network/") ||
+                    mountPoint.contains("/smb/") ||
+                    mountPoint.contains("/cifs/");
+
+            return isNetworkFileSystem || isNetworkMountPoint;
+        } catch (Exception e) {
+            logger.debug("Error checking Unix network drive", e);
+        }
+        return false;
+    }
+
+    private void updateNetworkDriveList(Set<Path> currentNetworkDrives) {
+        // Remove drives that are no longer available
+        availableShares.removeIf(share -> !currentNetworkDrives.contains(Path.of(share.getDisplayName())));
+
+        // Add new network drives
+        for (Path drive : currentNetworkDrives) {
+            if (!knownNetworkDrives.contains(drive)) {
+                String driveName = drive.toString();
+                long totalSpace = getTotalSpace(drive);
+                long availableSpace = getAvailableSpace(drive);
+                
+                SmbShare share = new SmbShare(driveName, driveName, true);
+                share.setTotalSpace(totalSpace);
+                share.setAvailableSpace(availableSpace);
+                
+                availableShares.add(share);
+                knownNetworkDrives.add(drive);
+                logger.info("New network drive detected: {}", drive);
+            }
+        }
+
+        knownNetworkDrives.retainAll(currentNetworkDrives);
+    }
+
     public CompletableFuture<Void> scanNetworkForShares() {
         return CompletableFuture.runAsync(() -> {
-            try {
-                List<SmbShare> shares = new ArrayList<>();
-                List<String> networkHosts = getNetworkHosts();
-
-                for (String host : networkHosts) {
-                    try {
-                        List<String> hostShares = getSharesForHost(host);
-                        for (String share : hostShares) {
-                            shares.add(new SmbShare(host, share, false));
-                        }
-                    } catch (Exception e) {
-                        logger.debug("Failed to get shares for host {}: {}", host, e.getMessage());
-                    }
-                }
-
-                javafx.application.Platform.runLater(() -> {
-                    availableShares.clear();
-                    availableShares.addAll(shares);
-                });
-
-            } catch (Exception e) {
-                logger.error("Error scanning network for SMB shares", e);
-            }
+            scanForNetworkDrives();
         }, executor);
     }
 
-    private List<String> getNetworkHosts() {
-        List<String> hosts = new ArrayList<>();
-        try {
-            for (NetworkInterface netInterface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (netInterface.isLoopback() || !netInterface.isUp()) continue;
-
-                for (InetAddress address : Collections.list(netInterface.getInetAddresses())) {
-                    if (address.isSiteLocalAddress()) {
-                        String subnet = getSubnet(address.getHostAddress());
-                        hosts.addAll(scanSubnet(subnet));
-                        break;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            logger.error("Error getting network hosts", e);
-        }
-        return hosts;
-    }
-
-    private String getSubnet(String ip) {
-        String[] parts = ip.split("\\.");
-        return parts[0] + "." + parts[1] + "." + parts[2] + ".";
-    }
-
-    private List<String> scanSubnet(String subnet) {
-        List<String> hosts = new ArrayList<>();
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-        for (int i = 1; i < 255; i++) {
-            final String host = subnet + i;
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                try {
-                    InetAddress address = InetAddress.getByName(host);
-                    if (address.isReachable(1000)) {
-                        synchronized (hosts) {
-                            hosts.add(host);
-                        }
-                    }
-                } catch (Exception e) {
-                    // Host not reachable
-                }
-            }, executor);
-            futures.add(future);
-        }
-
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        return hosts;
-    }
-
-    private List<String> getSharesForHost(String host) {
-        // This would require implementing SMB enumeration
-        // For now, return common share names
-        List<String> commonShares = List.of("shared", "public", "data", "backup", "files");
-        List<String> availableShares = new ArrayList<>();
-
-        for (String share : commonShares) {
-            try {
-                String testUrl = String.format("smb://%s/%s/", host, share);
-                if (testShareExists(host, share)) {
-                    availableShares.add(share);
-                }
-            } catch (Exception e) {
-                // Share doesn't exist or not accessible
-            }
-        }
-
-        return availableShares;
-    }
-
-    private boolean testShareExists(String host, String share) {
-        try {
-            networkService.connect(host, 445, "guest", "", share);
-            networkService.disconnect();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     public boolean connectToShare(SmbShare share, String username, String password) {
-        try {
-            networkService.connect(share.getHost(), 445, username, password, share.getShareName());
-            share.setConnected(true);
-            return true;
-        } catch (NetworkConnectionException e) {
-            logger.error("Failed to connect to share: {}", share, e);
-            return false;
-        }
+        // For already mounted network drives, no connection needed
+        share.setConnected(true);
+        return true;
     }
 
     public List<FileInfo> listDirectory(String path) throws IOException {
-        return networkService.listFiles(path);
+        List<FileInfo> files = new ArrayList<>();
+        try {
+            Path dirPath = Path.of(path);
+            if (Files.exists(dirPath) && Files.isDirectory(dirPath)) {
+                Files.list(dirPath).forEach(file -> {
+                    try {
+                        FileInfo fileInfo = new FileInfo();
+                        fileInfo.setName(file.getFileName().toString());
+                        fileInfo.setPath(file.toString());
+                        fileInfo.setDirectory(Files.isDirectory(file));
+                        if (!Files.isDirectory(file)) {
+                            fileInfo.setSize(Files.size(file));
+                            fileInfo.setLastModified(Files.getLastModifiedTime(file).toMillis());
+                        }
+                        files.add(fileInfo);
+                    } catch (IOException e) {
+                        logger.warn("Could not read file info for: {}", file, e);
+                    }
+                });
+            }
+        } catch (Exception e) {
+            logger.error("Failed to list directory: {}", path, e);
+            throw new IOException("Failed to list directory: " + path, e);
+        }
+        return files;
     }
 
     public String buildSmbUrl(SmbShare share, String path) {
-        return String.format("smb://%s/%s/%s", share.getHost(), share.getShareName(), path);
+        return Path.of(share.getHost(), path).toString();
+    }
+
+    public long getAvailableSpace(Path drive) {
+        try {
+            FileStore fileStore = Files.getFileStore(drive);
+            return fileStore.getUsableSpace();
+        } catch (IOException e) {
+            logger.error("Could not get available space for network drive: {}", drive, e);
+            return 0;
+        }
+    }
+
+    public long getTotalSpace(Path drive) {
+        try {
+            FileStore fileStore = Files.getFileStore(drive);
+            return fileStore.getTotalSpace();
+        } catch (IOException e) {
+            logger.error("Could not get total space for network drive: {}", drive, e);
+            return 0;
+        }
     }
 
     public void disconnect() {
-        networkService.disconnect();
+        // No disconnection needed for mounted drives
     }
 
     public void shutdown() {
         executor.shutdown();
-        networkService.disconnect();
+        scheduledExecutor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+            if (!scheduledExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduledExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            scheduledExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        logger.info("SMB drive service shut down");
     }
 }

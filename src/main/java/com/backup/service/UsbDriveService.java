@@ -49,7 +49,7 @@ public class UsbDriveService {
                 try {
                     FileStore fileStore = Files.getFileStore(root);
                     
-                    // Check if it's a USB/removable drive
+                    // Check if it's a local drive
                     if (isUsbDrive(root, fileStore)) {
                         currentDrives.add(root);
                     }
@@ -66,7 +66,7 @@ public class UsbDriveService {
             javafx.application.Platform.runLater(() -> updateDriveList(currentDrives));
 
         } catch (Exception e) {
-            logger.error("Error during USB drive scan", e);
+            logger.error("Error during local drive scan", e);
         }
     }
 
@@ -75,56 +75,73 @@ public class UsbDriveService {
             String osName = System.getProperty("os.name").toLowerCase();
             
             if (osName.contains("win")) {
-                return isWindowsUsbDrive(root, fileStore);
+                return isWindowsLocalDrive(root, fileStore);
             } else {
-                return isUnixUsbDrive(root, fileStore);
+                return isUnixLocalDrive(root, fileStore);
             }
         } catch (Exception e) {
             return false;
         }
     }
 
-    private boolean isWindowsUsbDrive(Path root, FileStore fileStore) {
+    private boolean isWindowsLocalDrive(Path root, FileStore fileStore) {
         try {
             String rootString = root.toString();
             if (rootString.length() >= 2 && rootString.charAt(1) == ':') {
                 char driveLetter = rootString.charAt(0);
                 
-                // Exclude system drives (typically C: and D:)
-                if (driveLetter == 'C' || driveLetter == 'D') {
-                    return false;
+                // Include local drives (C:, D:, etc.) but exclude network drives (Y:, Z:)
+                if (driveLetter >= 'Y' || driveLetter >= 'y') {
+                    return false; // These are typically network drives
                 }
                 
-                // Check file system type (USB drives typically use FAT32, exFAT, NTFS)
+                // Check file system type (local drives use NTFS, FAT32, etc.)
                 String type = fileStore.type().toLowerCase();
-                return type.contains("fat") || type.contains("exfat") || type.contains("ntfs");
+                String name = fileStore.name().toLowerCase();
+                
+                // Exclude network file systems
+                boolean isNotNetworkType = !type.contains("cifs") && !type.contains("smb") && 
+                                         !type.contains("nfs") && !name.contains("\\\\");
+                
+                return isNotNetworkType && (type.contains("ntfs") || type.contains("fat") || type.contains("exfat"));
             }
         } catch (Exception e) {
-            logger.debug("Error checking Windows USB drive", e);
+            logger.debug("Error checking Windows local drive", e);
         }
         return false;
     }
 
-    private boolean isUnixUsbDrive(Path root, FileStore fileStore) {
+    private boolean isUnixLocalDrive(Path root, FileStore fileStore) {
         try {
             String mountPoint = root.toString();
             String fileStoreType = fileStore.type().toLowerCase();
 
-            // Check mount point patterns typical for USB drives
-            boolean isMountPointUsb = mountPoint.startsWith("/media/") ||
-                    mountPoint.startsWith("/mnt/") ||
-                    mountPoint.startsWith("/Volumes/") ||
-                    mountPoint.contains("/usb");
+            // Exclude network file systems
+            boolean isNotNetworkFileSystem = !fileStoreType.equals("cifs") &&
+                    !fileStoreType.equals("smb") &&
+                    !fileStoreType.equals("nfs") &&
+                    !fileStoreType.equals("smbfs");
 
-            // Check file system types commonly used by USB drives
-            boolean isUsbFileSystem = fileStoreType.equals("vfat") ||
-                    fileStoreType.equals("exfat") ||
+            // Include local mount points but exclude network mount points
+            boolean isLocalMountPoint = mountPoint.equals("/") ||
+                    mountPoint.startsWith("/home") ||
+                    mountPoint.startsWith("/opt") ||
+                    mountPoint.startsWith("/usr") ||
+                    (mountPoint.startsWith("/media/") && !mountPoint.contains("/network/")) ||
+                    (mountPoint.startsWith("/mnt/") && !mountPoint.contains("/network/"));
+
+            // Check for local file systems
+            boolean isLocalFileSystem = fileStoreType.equals("ext4") ||
+                    fileStoreType.equals("ext3") ||
+                    fileStoreType.equals("ext2") ||
+                    fileStoreType.equals("xfs") ||
+                    fileStoreType.equals("btrfs") ||
                     fileStoreType.equals("ntfs") ||
-                    fileStoreType.equals("fat32");
+                    fileStoreType.equals("vfat");
 
-            return isMountPointUsb || isUsbFileSystem;
+            return isNotNetworkFileSystem && (isLocalMountPoint || isLocalFileSystem);
         } catch (Exception e) {
-            logger.debug("Error checking Unix USB drive", e);
+            logger.debug("Error checking Unix local drive", e);
         }
         return false;
     }
@@ -167,7 +184,7 @@ public class UsbDriveService {
             if (!knownDrives.contains(drive)) {
                 availableUsbDrives.add(drive);
                 knownDrives.add(drive);
-                logger.info("New USB drive detected: {}", drive);
+                logger.info("New local drive detected: {}", drive);
             }
         }
 
