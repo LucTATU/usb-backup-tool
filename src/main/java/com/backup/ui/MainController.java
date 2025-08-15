@@ -1,22 +1,24 @@
+
 package com.backup.ui;
 
-import com.backup.model.Configuration;
-import com.backup.model.History;
-import com.backup.service.BackupService;
-import com.backup.service.ConfigurationService;
-import com.backup.service.DriveDetectionService;
+import com.backup.model.*;
+import com.backup.service.*;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.ListChangeListener;
 import javafx.fxml.FXML;
 import javafx.scene.control.*;
+import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Optional;
 
 import static com.backup.Utils.formatBytes;
 import static com.backup.Utils.formatDateTime;
@@ -26,31 +28,31 @@ public class MainController {
     private static final Logger logger = LoggerFactory.getLogger(MainController.class);
     private static final DateTimeFormatter DATETIME_FORMATTER = formatDateTime();
 
-    // NAS Configuration
+    // SMB Source Configuration
     @FXML
-    private TextField hostField;
+    private ComboBox<SmbShare> smbShareComboBox;
     @FXML
-    private TextField portField;
+    private Button scanSmbButton;
     @FXML
-    private TextField usernameField;
+    private Button connectSmbButton;
     @FXML
-    private PasswordField passwordField;
+    private TextField smbUsernameField;
     @FXML
-    private TextField shareField;
+    private PasswordField smbPasswordField;
     @FXML
-    private TextField backupPathField;
+    private TreeView<FileInfo> smbDirectoryTree;
     @FXML
-    private Button testConnectionButton;
-    @FXML
-    private Label connectionStatus;
+    private Label smbStatusLabel;
 
-    // Drive Selection
+    // USB Destination Configuration
     @FXML
-    private ComboBox<Path> driveComboBox;
+    private ComboBox<Path> usbDriveComboBox;
     @FXML
-    private Button refreshDrivesButton;
+    private Button refreshUsbButton;
     @FXML
-    private Label driveInfoLabel;
+    private TreeView<Path> usbDirectoryTree;
+    @FXML
+    private Label usbInfoLabel;
 
     // Backup Control
     @FXML
@@ -81,31 +83,51 @@ public class MainController {
     private TableColumn<History, String> statusColumn;
 
     private ConfigurationService configService;
-    private DriveDetectionService driveDetectionService;
+    private SmbDriveService smbDriveService;
+    private UsbDriveService usbDriveService;
     private BackupService backupService;
 
+    private String selectedSmbPath = "";
+    private Path selectedUsbPath;
+
     public void initialize(ConfigurationService configService,
-                           DriveDetectionService driveDetectionService,
+                           SmbDriveService smbDriveService,
+                           UsbDriveService usbDriveService,
                            BackupService backupService) {
         this.configService = configService;
-        this.driveDetectionService = driveDetectionService;
+        this.smbDriveService = smbDriveService;
+        this.usbDriveService = usbDriveService;
         this.backupService = backupService;
 
         setupUI();
         loadConfiguration();
-        setupDriveMonitoring();
+        setupSmbMonitoring();
+        setupUsbMonitoring();
         setupHistoryTable();
     }
 
     private void setupUI() {
-        // Setup drive combo box
-        driveComboBox.setConverter(new StringConverter<>() {
+        // Setup SMB share combo box
+        smbShareComboBox.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(SmbShare share) {
+                return share != null ? share.toString() : "";
+            }
+
+            @Override
+            public SmbShare fromString(String string) {
+                return null;
+            }
+        });
+
+        // Setup USB drive combo box
+        usbDriveComboBox.setConverter(new StringConverter<>() {
             @Override
             public String toString(Path path) {
                 if (path == null) return "";
 
-                long totalSpace = driveDetectionService.getTotalSpace(path);
-                long availableSpace = driveDetectionService.getAvailableSpace(path);
+                long totalSpace = usbDriveService.getTotalSpace(path);
+                long availableSpace = usbDriveService.getAvailableSpace(path);
 
                 return String.format("%s (%s / %s)",
                         path,
@@ -115,50 +137,93 @@ public class MainController {
 
             @Override
             public Path fromString(String string) {
-                return null; // Not needed for display-only combo box
+                return null;
             }
         });
 
-        // Setup drive selection listener
-        driveComboBox.getSelectionModel().selectedItemProperty().addListener(
-                (obs, oldVal, newVal) -> updateDriveInfo(newVal));
+        // Setup directory trees
+        setupSmbDirectoryTree();
+        setupUsbDirectoryTree();
 
-        // Setup form field listeners to save configuration
-        hostField.textProperty().addListener((obs, oldVal, newVal) -> saveConfiguration());
-        portField.textProperty().addListener((obs, oldVal, newVal) -> saveConfiguration());
-        usernameField.textProperty().addListener((obs, oldVal, newVal) -> saveConfiguration());
-        shareField.textProperty().addListener((obs, oldVal, newVal) -> saveConfiguration());
-        backupPathField.textProperty().addListener((obs, oldVal, newVal) -> saveConfiguration());
+        // Setup drive selection listeners
+        usbDriveComboBox.getSelectionModel().selectedItemProperty().addListener(
+                (obs, oldVal, newVal) -> updateUsbDirectoryTree(newVal));
+    }
+
+    private void setupSmbDirectoryTree() {
+        smbDirectoryTree.setCellFactory(tv -> new TreeCell<>() {
+            @Override
+            protected void updateItem(FileInfo item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.getName());
+                }
+            }
+        });
+
+        smbDirectoryTree.getSelectionModel().selectedItemProperty().addListener(
+                (obs, oldVal, newVal) -> {
+                    if (newVal != null && newVal.getValue() != null) {
+                        selectedSmbPath = newVal.getValue().getPath();
+                    }
+                });
+    }
+
+    private void setupUsbDirectoryTree() {
+        usbDirectoryTree.setCellFactory(tv -> new TreeCell<>() {
+            @Override
+            protected void updateItem(Path item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.getFileName() != null ? item.getFileName().toString() : item.toString());
+                }
+            }
+        });
+
+        usbDirectoryTree.getSelectionModel().selectedItemProperty().addListener(
+                (obs, oldVal, newVal) -> {
+                    if (newVal != null && newVal.getValue() != null) {
+                        selectedUsbPath = newVal.getValue();
+                    }
+                });
     }
 
     private void loadConfiguration() {
         Configuration config = configService.getConfiguration();
-
-        if (config.getNasHost() != null) hostField.setText(config.getNasHost());
-        portField.setText(String.valueOf(config.getNasPort()));
-        if (config.getNasUsername() != null) usernameField.setText(config.getNasUsername());
-        if (config.getNasShareName() != null) shareField.setText(config.getNasShareName());
-        if (config.getNasBackupPath() != null) backupPathField.setText(config.getNasBackupPath());
-
-        // Load history
         historyTable.getItems().setAll(config.getHistories());
     }
 
-    private void setupDriveMonitoring() {
-        // Bind combo box to available drives
-        driveComboBox.setItems(driveDetectionService.getAvailableDrives());
+    private void setupSmbMonitoring() {
+        smbShareComboBox.setItems(smbDriveService.getAvailableShares());
 
-        // Listen for drive changes
-        driveDetectionService.getAvailableDrives().addListener(
+        smbDriveService.getAvailableShares().addListener(
+                (ListChangeListener<SmbShare>) change -> {
+                    Platform.runLater(() -> {
+                        if (change.getList().isEmpty()) {
+                            smbStatusLabel.setText("No SMB shares detected");
+                        } else {
+                            smbStatusLabel.setText(change.getList().size() + " SMB shares found");
+                        }
+                    });
+                });
+    }
+
+    private void setupUsbMonitoring() {
+        usbDriveComboBox.setItems(usbDriveService.getAvailableUsbDrives());
+
+        usbDriveService.getAvailableUsbDrives().addListener(
                 (ListChangeListener<Path>) change -> {
                     Platform.runLater(() -> {
                         if (change.getList().isEmpty()) {
-                            driveInfoLabel.setText("No external drives detected");
+                            usbInfoLabel.setText("No USB drives detected");
                             startBackupButton.setDisable(true);
                         } else {
-                            // Auto-select first drive if none selected
-                            if (driveComboBox.getSelectionModel().isEmpty()) {
-                                driveComboBox.getSelectionModel().selectFirst();
+                            if (usbDriveComboBox.getSelectionModel().isEmpty()) {
+                                usbDriveComboBox.getSelectionModel().selectFirst();
                             }
                             startBackupButton.setDisable(false);
                         }
@@ -187,97 +252,189 @@ public class MainController {
     }
 
     @FXML
-    private void testConnection() {
-        testConnectionButton.setDisable(true);
-        connectionStatus.setText("Testing...");
+    private void scanSmbShares() {
+        scanSmbButton.setDisable(true);
+        scanSmbButton.setText("Scanning...");
+        smbStatusLabel.setText("Scanning network for SMB shares...");
 
-        // Run connection test in background
-        Thread testThread = new Thread(() -> {
-            try {
-                Configuration config = getCurrentConfiguration();
-
-                // Simple validation
-                if (config.getNasHost() == null || config.getNasHost().trim().isEmpty()) {
-                    throw new IllegalArgumentException("Host is required");
-                }
-                if (config.getNasUsername() == null || config.getNasUsername().trim().isEmpty()) {
-                    throw new IllegalArgumentException("Username is required");
-                }
-                if (config.getNasShareName() == null || config.getNasShareName().trim().isEmpty()) {
-                    throw new IllegalArgumentException("Share name is required");
-                }
-
-                // TODO: Test actual connection
-                // For now, just simulate a successful test
-                Thread.sleep(2000);
-
-                Platform.runLater(() -> {
-                    connectionStatus.setText("Connected successfully");
-                    connectionStatus.setStyle("-fx-text-fill: green;");
-                });
-
-            } catch (Exception e) {
-                Platform.runLater(() -> {
-                    connectionStatus.setText("Connection failed: " + e.getMessage());
-                    connectionStatus.setStyle("-fx-text-fill: red;");
-                });
-            } finally {
-                Platform.runLater(() -> testConnectionButton.setDisable(false));
-            }
+        smbDriveService.scanNetworkForShares().thenRun(() -> {
+            Platform.runLater(() -> {
+                scanSmbButton.setDisable(false);
+                scanSmbButton.setText("Scan Network");
+                smbStatusLabel.setText("Scan completed");
+            });
         });
-
-        testThread.setDaemon(true);
-        testThread.start();
     }
 
     @FXML
-    private void refreshDrives() {
-        // Drive detection is automatic, but we can trigger a manual update
-        refreshDrivesButton.setText("Refreshing...");
-        refreshDrivesButton.setDisable(true);
+    private void connectToSmb() {
+        SmbShare selectedShare = smbShareComboBox.getSelectionModel().getSelectedItem();
+        if (selectedShare == null) {
+            showAlert("Please select an SMB share first.");
+            return;
+        }
 
-        // Re-enable button after a short delay
+        String username = smbUsernameField.getText().trim();
+        String password = smbPasswordField.getText();
+
+        if (username.isEmpty()) {
+            username = "guest";
+        }
+
+        connectSmbButton.setDisable(true);
+        smbStatusLabel.setText("Connecting...");
+
+        Thread connectThread = new Thread(() -> {
+            boolean success = smbDriveService.connectToShare(selectedShare, username, password);
+
+            Platform.runLater(() -> {
+                connectSmbButton.setDisable(false);
+                if (success) {
+                    smbStatusLabel.setText("Connected successfully");
+                    loadSmbDirectoryTree(selectedShare);
+                } else {
+                    smbStatusLabel.setText("Connection failed");
+                }
+            });
+        });
+
+        connectThread.setDaemon(true);
+        connectThread.start();
+    }
+
+    private void loadSmbDirectoryTree(SmbShare share) {
+        try {
+            String rootPath = smbDriveService.buildSmbUrl(share, "");
+            FileInfo rootInfo = new FileInfo();
+            rootInfo.setName(share.getDisplayName());
+            rootInfo.setPath(rootPath);
+            rootInfo.setDirectory(true);
+
+            TreeItem<FileInfo> rootItem = new TreeItem<>(rootInfo);
+            loadSmbChildren(rootItem, rootPath);
+            
+            smbDirectoryTree.setRoot(rootItem);
+            rootItem.setExpanded(true);
+        } catch (Exception e) {
+            logger.error("Failed to load SMB directory tree", e);
+            showAlert("Failed to load directory tree: " + e.getMessage());
+        }
+    }
+
+    private void loadSmbChildren(TreeItem<FileInfo> parentItem, String parentPath) {
+        try {
+            List<FileInfo> children = smbDriveService.listDirectory(parentPath);
+            for (FileInfo child : children) {
+                if (child.isDirectory()) {
+                    TreeItem<FileInfo> childItem = new TreeItem<>(child);
+                    parentItem.getChildren().add(childItem);
+                    
+                    // Add a dummy child to make it expandable
+                    childItem.getChildren().add(new TreeItem<>());
+                    
+                    childItem.expandedProperty().addListener((obs, wasExpanded, isExpanded) -> {
+                        if (isExpanded && childItem.getChildren().size() == 1 && childItem.getChildren().get(0).getValue() == null) {
+                            childItem.getChildren().clear();
+                            loadSmbChildren(childItem, child.getPath());
+                        }
+                    });
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Failed to load SMB children for: {}", parentPath, e);
+        }
+    }
+
+    private void updateUsbDirectoryTree(Path drive) {
+        if (drive == null) {
+            usbDirectoryTree.setRoot(null);
+            return;
+        }
+
+        TreeItem<Path> rootItem = new TreeItem<>(drive);
+        loadUsbChildren(rootItem);
+        
+        usbDirectoryTree.setRoot(rootItem);
+        rootItem.setExpanded(true);
+
+        updateUsbInfo(drive);
+    }
+
+    private void loadUsbChildren(TreeItem<Path> parentItem) {
+        try {
+            Path parentPath = parentItem.getValue();
+            if (Files.isDirectory(parentPath)) {
+                Files.list(parentPath)
+                        .filter(Files::isDirectory)
+                        .forEach(childPath -> {
+                            TreeItem<Path> childItem = new TreeItem<>(childPath);
+                            parentItem.getChildren().add(childItem);
+                            
+                            // Add dummy child to make expandable if it has subdirectories
+                            try {
+                                if (Files.list(childPath).anyMatch(Files::isDirectory)) {
+                                    childItem.getChildren().add(new TreeItem<>());
+                                    
+                                    childItem.expandedProperty().addListener((obs, wasExpanded, isExpanded) -> {
+                                        if (isExpanded && childItem.getChildren().size() == 1 && childItem.getChildren().get(0).getValue() == null) {
+                                            childItem.getChildren().clear();
+                                            loadUsbChildren(childItem);
+                                        }
+                                    });
+                                }
+                            } catch (IOException e) {
+                                // Ignore
+                            }
+                        });
+            }
+        } catch (IOException e) {
+            logger.error("Failed to load USB children for: {}", parentItem.getValue(), e);
+        }
+    }
+
+    @FXML
+    private void refreshUsbDrives() {
+        refreshUsbButton.setText("Refreshing...");
+        refreshUsbButton.setDisable(true);
+
         Platform.runLater(() -> {
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            refreshDrivesButton.setText("Refresh");
-            refreshDrivesButton.setDisable(false);
+            refreshUsbButton.setText("Refresh USB");
+            refreshUsbButton.setDisable(false);
         });
     }
 
     @FXML
     private void startBackup() {
-        Path selectedDrive = driveComboBox.getSelectionModel().getSelectedItem();
-        if (selectedDrive == null) {
-            showAlert("Please select an external drive first.");
+        if (selectedSmbPath.isEmpty()) {
+            showAlert("Please select a source folder from SMB share.");
             return;
         }
 
-        if (!Files.exists(selectedDrive)) {
-            showAlert("Selected drive is no longer available.");
+        if (selectedUsbPath == null) {
+            showAlert("Please select a destination folder on USB drive.");
             return;
         }
 
-        Configuration config = getCurrentConfiguration();
-
-        // Validate configuration
-        if (config.getNasHost() == null || config.getNasHost().trim().isEmpty()) {
-            showAlert("Please configure NAS connection settings first.");
+        if (!Files.exists(selectedUsbPath)) {
+            showAlert("Selected USB path is no longer available.");
             return;
         }
 
-        // Update UI for backup in progress
+        // Create a minimal configuration for backup
+        Configuration config = new Configuration();
+        
         startBackupButton.setDisable(true);
         cancelBackupButton.setDisable(false);
         progressBar.setProgress(0);
         progressLabel.setText("");
 
-        // Start backup
-        backupService.startBackup(config, selectedDrive,
-                // Progress callback
+        // Start backup with selected paths
+        backupService.startBackup(config, selectedUsbPath,
                 progress -> {
                     double fileProgress = progress.getFileProgress();
                     progressBar.setProgress(fileProgress);
@@ -285,9 +442,7 @@ public class MainController {
                             progress.filesProcessed, progress.totalFiles,
                             formatBytes(progress.bytesProcessed), formatBytes(progress.totalBytes)));
                 },
-                // Status callback
                 status -> statusLabel.setText(status),
-                // Completion callback
                 success -> {
                     startBackupButton.setDisable(false);
                     cancelBackupButton.setDisable(true);
@@ -300,7 +455,6 @@ public class MainController {
                         progressLabel.setText("Backup failed.");
                     }
 
-                    // Refresh history table
                     historyTable.getItems().setAll(config.getHistories());
                     saveConfiguration();
                 });
@@ -317,49 +471,25 @@ public class MainController {
         progressLabel.setText("");
     }
 
-    private void updateDriveInfo(Path drive) {
+    private void updateUsbInfo(Path drive) {
         if (drive == null) {
-            driveInfoLabel.setText("No drive selected");
+            usbInfoLabel.setText("No USB drive selected");
             return;
         }
 
-        long totalSpace = driveDetectionService.getTotalSpace(drive);
-        long availableSpace = driveDetectionService.getAvailableSpace(drive);
+        long totalSpace = usbDriveService.getTotalSpace(drive);
+        long availableSpace = usbDriveService.getAvailableSpace(drive);
         long usedSpace = totalSpace - availableSpace;
 
         double usagePercent = totalSpace > 0 ? (double) usedSpace / totalSpace * 100 : 0;
 
-        driveInfoLabel.setText(String.format("Space: %s used, %s available (%.1f%% full)",
+        usbInfoLabel.setText(String.format("Space: %s used, %s available (%.1f%% full)",
                 formatBytes(usedSpace), formatBytes(availableSpace), usagePercent));
-    }
-
-    private Configuration getCurrentConfiguration() {
-        Configuration config = configService.getConfiguration();
-
-        config.setNasHost(hostField.getText().trim());
-
-        try {
-            config.setNasPort(Integer.parseInt(portField.getText().trim()));
-        } catch (NumberFormatException e) {
-            config.setNasPort(445);
-        }
-
-        config.setNasUsername(usernameField.getText().trim());
-        config.setNasPassword(passwordField.getText());
-        config.setNasShareName(shareField.getText().trim());
-        config.setNasBackupPath(backupPathField.getText().trim());
-
-        Path selectedDrive = driveComboBox.getSelectionModel().getSelectedItem();
-        if (selectedDrive != null) {
-            config.setLastUsedExternalDrive(selectedDrive);
-        }
-
-        return config;
     }
 
     private void saveConfiguration() {
         try {
-            Configuration config = getCurrentConfiguration();
+            Configuration config = configService.getConfiguration();
             configService.saveConfiguration(config);
         } catch (Exception e) {
             logger.warn("Could not save configuration", e);
@@ -368,7 +498,7 @@ public class MainController {
 
     private void showAlert(String message) {
         Alert alert = new Alert(Alert.AlertType.WARNING);
-        alert.setTitle("NAS Backup Tool");
+        alert.setTitle("Backup Tool");
         alert.setHeaderText(null);
         alert.setContentText(message);
         alert.showAndWait();
