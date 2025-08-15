@@ -1,5 +1,8 @@
+
 package com.backup.service;
 
+import com.backup.constants.AppConstants;
+import com.backup.exception.NetworkConnectionException;
 import com.backup.model.FileInfo;
 import jcifs.CIFSContext;
 import jcifs.config.PropertyConfiguration;
@@ -24,46 +27,50 @@ public class NetworkFileService {
     private String currentHost;
     private int currentPort;
     private String currentUsername;
+    private String currentShareName;
 
-    public void connect(String host, int port, String username, String password, String shareName) throws IOException {
+    public void connect(String host, int port, String username, String password, String shareName) 
+            throws NetworkConnectionException {
         try {
-            // Setup JCIFS properties
-            Properties props = new Properties();
-            props.put("jcifs.smb.client.enableSMB2", "true");
-            props.put("jcifs.smb.client.disableSMB1", "false"); // Keep SMB1 as fallback
-            props.put("jcifs.smb.client.responseTimeout", "30000");
-            props.put("jcifs.smb.client.connTimeout", "10000");
-
+            Properties props = createSmbProperties();
             PropertyConfiguration config = new PropertyConfiguration(props);
-
-// 2. Create a CIFSContext from the config
             CIFSContext baseContext = new BaseContext(config);
-
-// 3. Add authentication
+            
             NtlmPasswordAuthenticator auth = new NtlmPasswordAuthenticator(username, password);
-            CIFSContext authedContext = baseContext.withCredentials(auth);
+            this.context = baseContext.withCredentials(auth);
 
-            // Test connection
-            String testUrl = String.format("smb://%s:%d/%s/", host, port, shareName);
-            SmbFile testFile = new SmbFile(testUrl, context);
-            testFile.exists(); // This will throw an exception if connection fails
-
+            testConnection(host, port, shareName);
+            
             this.currentHost = host;
             this.currentPort = port;
             this.currentUsername = username;
+            this.currentShareName = shareName;
 
             logger.info("Successfully connected to SMB share: {}:{}/{}", host, port, shareName);
 
         } catch (Exception e) {
             logger.error("Failed to connect to SMB share: {}:{}", host, port, e);
-            throw new IOException("SMB connection failed", e);
+            throw new NetworkConnectionException("SMB connection failed: " + e.getMessage(), e);
         }
+    }
+    
+    private Properties createSmbProperties() {
+        Properties props = new Properties();
+        props.put("jcifs.smb.client.enableSMB2", "true");
+        props.put("jcifs.smb.client.disableSMB1", "false");
+        props.put("jcifs.smb.client.responseTimeout", String.valueOf(AppConstants.DEFAULT_RESPONSE_TIMEOUT));
+        props.put("jcifs.smb.client.connTimeout", String.valueOf(AppConstants.DEFAULT_CONNECTION_TIMEOUT));
+        return props;
+    }
+    
+    private void testConnection(String host, int port, String shareName) throws IOException {
+        String testUrl = String.format(AppConstants.SMB_URL_FORMAT, host, port, shareName);
+        SmbFile testFile = new SmbFile(testUrl, context);
+        testFile.exists();
     }
 
     public List<FileInfo> listFiles(String remotePath) throws IOException {
-        if (context == null) {
-            throw new IllegalStateException("Not connected to NAS");
-        }
+        validateConnection();
 
         try {
             SmbFile directory = new SmbFile(remotePath, context);
@@ -73,13 +80,7 @@ public class NetworkFileService {
 
             if (files != null) {
                 for (SmbFile file : files) {
-                    FileInfo info = new FileInfo();
-                    info.name = file.getName();
-                    info.path = file.getPath();
-                    info.isDirectory = file.isDirectory();
-                    info.size = file.length();
-                    info.lastModified = file.getLastModified();
-
+                    FileInfo info = createFileInfo(file);
                     fileInfos.add(info);
                 }
             }
@@ -89,48 +90,51 @@ public class NetworkFileService {
 
         } catch (Exception e) {
             logger.error("Failed to list files from: {}", remotePath, e);
-            throw new IOException("Failed to list remote files", e);
+            throw new IOException("Failed to list remote files: " + e.getMessage(), e);
         }
+    }
+    
+    private FileInfo createFileInfo(SmbFile file) throws IOException {
+        FileInfo info = new FileInfo();
+        info.setName(file.getName());
+        info.setPath(file.getPath());
+        info.setDirectory(file.isDirectory());
+        info.setSize(file.length());
+        info.setLastModified(file.getLastModified());
+        return info;
     }
 
     public InputStream openFile(String remotePath) throws IOException {
-        if (context == null) {
-            throw new IllegalStateException("Not connected to NAS");
-        }
+        validateConnection();
 
         try {
             SmbFile file = new SmbFile(remotePath, context);
             return new SmbFileInputStream(file);
         } catch (Exception e) {
             logger.error("Failed to open remote file: {}", remotePath, e);
-            throw new IOException("Failed to open remote file", e);
+            throw new IOException("Failed to open remote file: " + e.getMessage(), e);
         }
     }
 
     public FileInfo getFileInfo(String remotePath) throws IOException {
-        if (context == null) {
-            throw new IllegalStateException("Not connected to NAS");
-        }
+        validateConnection();
 
         try {
             SmbFile file = new SmbFile(remotePath, context);
-
-            FileInfo info = new FileInfo();
-            info.name = file.getName();
-            info.path = file.getPath();
-            info.isDirectory = file.isDirectory();
-            info.size = file.length();
-            info.lastModified = file.getLastModified();
-
-            return info;
-
+            return createFileInfo(file);
         } catch (Exception e) {
             logger.error("Failed to get file info for: {}", remotePath, e);
-            throw new IOException("Failed to get remote file info", e);
+            throw new IOException("Failed to get remote file info: " + e.getMessage(), e);
+        }
+    }
+    
+    private void validateConnection() throws IllegalStateException {
+        if (context == null) {
+            throw new IllegalStateException("Not connected to NAS");
         }
     }
 
-    public boolean testConnection() {
+    public boolean isConnected() {
         return context != null;
     }
 
@@ -139,14 +143,14 @@ public class NetworkFileService {
         currentHost = null;
         currentPort = 0;
         currentUsername = null;
+        currentShareName = null;
         logger.info("Disconnected from SMB share");
     }
 
-    public String getCurrentConnection() {
+    public String getConnectionInfo() {
         if (context != null) {
-            return String.format("%s@%s:%d", currentUsername, currentHost, currentPort);
+            return String.format("%s@%s:%d/%s", currentUsername, currentHost, currentPort, currentShareName);
         }
         return "Not connected";
     }
-
 }

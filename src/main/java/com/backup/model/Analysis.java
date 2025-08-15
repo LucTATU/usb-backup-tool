@@ -1,6 +1,10 @@
+
 package com.backup.model;
 
+import lombok.Data;
+
+@Data
 public class Analysis {
-    public long filesToBackup = 0;
-    public long totalSizeToBackup = 0;
+    private long filesToBackup = 0;
+    private long totalSizeToBackup = 0;
 }
