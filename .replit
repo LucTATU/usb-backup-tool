@@ -3,6 +3,19 @@ run = "mvn clean javafx:run"
 
 [nix]
 channel = "stable-25_05"
+packages = ["dit"]
 
 [deployment]
 run = ["sh", "-c", "mvn clean javafx:run"]
+
+[workflows]
+runButton = "Run NAS Backup App"
+
+[[workflows.workflow]]
+name = "Run NAS Backup App"
+author = 46424046
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "mvn clean javafx:run"
